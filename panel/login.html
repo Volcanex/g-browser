@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Log in - g-browser</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center;
+         background:#0d0f12; color:#e6e6e6; font:15px/1.5 ui-monospace,monospace; }
+  form { width:min(92vw,360px); padding:2rem; border:1px solid #23272e; border-radius:10px; background:#14171c; }
+  h1 { margin:0 0 1rem; font-size:1rem; font-weight:600; letter-spacing:.02em; }
+  p  { margin:0 0 1.2rem; color:#8a929e; font-size:.82rem; }
+  input { width:100%; box-sizing:border-box; padding:.6rem .7rem; margin-bottom:.8rem;
+          background:#0d0f12; border:1px solid #2a2f37; border-radius:6px; color:#e6e6e6; font:inherit; }
+  button { width:100%; padding:.6rem; background:#2f6feb; border:0; border-radius:6px; color:#fff; font:inherit; cursor:pointer; }
+  button:hover { background:#3b7bf7; }
+  .err { color:#f0715f; font-size:.8rem; min-height:1.1em; margin-top:.4rem; }
+</style>
+</head>
+<body>
+<form id="f">
+  <h1>g-browser</h1>
+  <p>This panel drives a live browser logged in as you. Password required.</p>
+  <input id="pw" type="password" placeholder="password" autofocus autocomplete="current-password">
+  <button type="submit">Enter</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+  const f = document.getElementById('f'), err = document.getElementById('err');
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault(); err.textContent = '';
+    const r = await fetch('/api/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({password: document.getElementById('pw').value})
+    });
+    if (r.ok) location.href = '/';
+    else err.textContent = r.status === 429 ? 'Too many attempts. Wait a minute, then try again.' : 'Wrong password.';
+  });
+</script>
+</body>
+</html>

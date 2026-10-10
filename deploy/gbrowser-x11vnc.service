@@ -1,0 +1,21 @@
+# Example unit, one of the four g-browser units (see gbrowser.service). Replace
+# @USER@ with the account that runs gbrowser.service, copy to
+# /etc/systemd/system/ and enable it.
+[Unit]
+Description=gbrowser: x11vnc exposing display :99 on loopback (viewer for the panel)
+After=gbrowser-xvfb.service
+Requires=gbrowser-xvfb.service
+
+[Service]
+Type=simple
+# Loopback only, and never proxy 5900 or 6080 from nginx: the app's /vnc/
+# proxy (vncproxy.py) is the only way in, and it checks the panel cookie.
+# -forever so it survives viewer disconnects, -shared so the panel and a
+# debugging viewer can watch at once. No VNC password, so that cookie check is
+# the whole gate.
+ExecStart=/usr/bin/x11vnc -display :99 -rfbport 5900 -localhost -forever -shared -nopw -quiet
+Restart=on-failure
+User=@USER@
+
+[Install]
+WantedBy=multi-user.target

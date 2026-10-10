@@ -1,0 +1,15 @@
+# Example unit, one of the four g-browser units (see gbrowser.service). Replace
+# @USER@ with the account that runs gbrowser.service, copy to
+# /etc/systemd/system/ and enable it.
+[Unit]
+Description=gbrowser: Xvfb virtual display :99 for the headful browser
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp
+Restart=on-failure
+User=@USER@
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,36 @@
+# Example unit for the g-browser job service and panel. Replace the @NAME@
+# placeholders, copy to /etc/systemd/system/ with the three display units
+# (gbrowser-xvfb, gbrowser-x11vnc, gbrowser-novnc) and enable all four.
+#   @USER@          the account that runs Chrome and owns @REPO@/var, the same
+#                   one in all four units
+#   @REPO@          this checkout, with its venv at @REPO@/.venv
+#   @INSTANCE_ENV@  the instance passport, usually gp-core/.env beside @REPO@.
+#                   Without a passport, point it at @REPO@/.env.
+# Secrets go in those files, mode 600. GBROWSER_COOKIE_VALUE can live apart in
+# /etc/g-secrets/gbrowser-admin.env, read below.
+[Unit]
+Description=gbrowser: stealth browser job service + admin panel (port 8098)
+After=gbrowser-xvfb.service network.target
+Requires=gbrowser-xvfb.service
+
+[Service]
+Type=simple
+WorkingDirectory=@REPO@
+# Passport (shared secrets: GBROWSER_PASSWORD, GBROWSER_SERVICE_TOKEN,
+# WEBSHARE_RESIDENTIAL_*) then the checkout's own .env (GBROWSER_PANEL_URL and
+# any overrides).
+EnvironmentFile=@INSTANCE_ENV@
+EnvironmentFile=-@REPO@/.env
+# GBROWSER_COOKIE_VALUE, the admin session secret. server.py refuses to
+# start without it.
+EnvironmentFile=-/etc/g-secrets/gbrowser-admin.env
+Environment=DISPLAY=:99
+Environment=HOST=127.0.0.1
+Environment=PORT=8098
+Environment=GBROWSER_COOKIE_SECURE=1
+ExecStart=@REPO@/.venv/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8098 --proxy-headers
+Restart=on-failure
+User=@USER@
+
+[Install]
+WantedBy=multi-user.target

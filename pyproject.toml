@@ -1,0 +1,26 @@
+[project]
+name = "g-browser"
+version = "0.1.0"
+description = "Shared stealth browser: one always-on, logged-in headful Chrome, exposed as a job service for any G-System project that hits a human-only UI"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "patchright",
+    "httpx",
+    "python-multipart",
+]
+
+[project.scripts]
+gbrowser = "cli:main"
+
+[tool.gcore]
+depends = ["webshare", "ntfy"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["cli", "server", "auth", "vncproxy", "assist"]
+packages = ["browser"]

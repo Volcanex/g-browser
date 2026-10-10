@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>g-browser</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0d0f12; color:#e6e6e6; font:14px/1.5 ui-monospace,monospace; }
+  header { display:flex; align-items:center; gap:1rem; padding:.7rem 1rem; border-bottom:1px solid #23272e; flex-wrap:wrap; }
+  header h1 { margin:0; font-size:1rem; font-weight:600; }
+  header .sp { flex:1; }
+  a.logout { color:#8a929e; text-decoration:none; font-size:.8rem; }
+  main { display:grid; grid-template-columns: 1fr 320px; gap:1rem; padding:1rem; }
+  @media (max-width:820px){ main{ grid-template-columns:1fr; } }
+  .view { border:1px solid #23272e; border-radius:8px; background:#000; aspect-ratio:16/9; display:grid; place-items:center; color:#555; overflow:hidden; }
+  .view iframe { width:100%; height:100%; border:0; }
+  .view:fullscreen { aspect-ratio:auto; width:100%; height:100%; border:0; }
+  .vtools { display:flex; gap:.5rem; margin-bottom:.6rem; flex-wrap:wrap; }
+  .vtools .re { width:auto; padding:.4rem .9rem; }
+  @media (max-width:820px){ .view{ aspect-ratio:auto; height:62vh; } }
+  aside { display:flex; flex-direction:column; gap:.9rem; }
+  .card { border:1px solid #23272e; border-radius:8px; background:#14171c; padding:.8rem .9rem; }
+  .card h2 { margin:0 0 .5rem; font-size:.72rem; text-transform:uppercase; letter-spacing:.08em; color:#8a929e; font-weight:600; }
+  .kv { display:flex; justify-content:space-between; gap:.5rem; font-size:.82rem; padding:.15rem 0; }
+  .kv span:last-child { color:#b7c0cc; text-align:right; word-break:break-all; }
+  .dot { display:inline-block; width:.6rem; height:.6rem; border-radius:50%; background:#666; margin-right:.4rem; vertical-align:middle; }
+  .dot.on { background:#3fb950; } .dot.off { background:#f0715f; } .dot.busy { background:#d29922; }
+  button.re { width:100%; padding:.5rem; background:#21262d; border:1px solid #2a2f37; border-radius:6px; color:#e6e6e6; font:inherit; cursor:pointer; }
+  button.re:hover { background:#2a3038; }
+  .hint { color:#8a929e; font-size:.74rem; margin-top:.4rem; }
+  /* The mode badge is deliberately loud when identity is armed: that mode acts
+     as you, and knowing which persona is live should never need a squint. */
+  .mode { font-size:.78rem; font-weight:700; padding:.15rem .55rem; border-radius:4px; letter-spacing:.04em; text-transform:uppercase; }
+  .mode.identity { background:#5a1d1d; color:#ffb4a8; border:1px solid #8c2f2f; }
+  .mode.research { background:#12313d; color:#8fd7f0; border:1px solid #1d5871; }
+  .mode.direct   { background:#3a3320; color:#e8d08a; border:1px solid #6b5c2c; }
+  .modebtns { display:flex; gap:.4rem; }
+  .modebtns .re { font-size:.76rem; padding:.35rem .2rem; }
+  /* Activity: the VNC pane shows the pixels, this shows the intent. You need
+     both to understand why an agent did something. */
+  #feed { height:230px; overflow-y:auto; background:#0a0c0f; border:1px solid #23272e; border-radius:8px; padding:.5rem .6rem; font-size:.76rem; margin-top:.7rem; }
+  #feed div { padding:.1rem 0; border-bottom:1px solid #14171c; display:flex; gap:.5rem; }
+  #feed .t { color:#5c646f; flex:0 0 auto; }
+  #feed .a { color:#8fd7f0; flex:0 0 8.5rem; }
+  #feed .d { color:#b7c0cc; word-break:break-all; }
+  #feed .e .a, #feed .e .d { color:#f0715f; }
+  #feed .s .a, #feed .s .d { color:#d29922; }
+  #feed .m .a, #feed .m .d { color:#a6e3a1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>g-browser</h1>
+  <span id="modebadge" class="mode research"></span>
+  <span id="state"><span class="dot"></span>connecting…</span>
+  <span class="sp"></span>
+  <a class="logout" href="#" onclick="fetch('/api/logout',{method:'POST'}).then(()=>location.href='/login');return false;">log out</a>
+</header>
+<main>
+  <div>
+    <div class="vtools">
+      <button class="re" id="fs">Fullscreen</button>
+      <button class="re" id="pop">Open full-page</button>
+    </div>
+    <!-- Live view: full noVNC client (control bar has on-screen keyboard +
+         fullscreen + touch), proxied auth-gated through the app at /vnc/. -->
+    <div class="view" id="view"><iframe id="vnc" title="live browser" src="about:blank" allow="fullscreen"></iframe>
+      <noscript>live view needs JS</noscript>
+    </div>
+    <div id="feed"></div>
+    <div class="hint">Live view of the real browser. Take over to log in. Below it, what the agents are actually doing. On mobile, tap <b>Open full-page</b> for the on-screen keyboard.</div>
+  </div>
+  <aside>
+    <div class="card">
+      <h2>Mode</h2>
+      <div class="kv"><span>Active</span><span id="mode"></span></div>
+      <div class="kv"><span>Acts as you</span><span id="isident"></span></div>
+      <div class="kv"><span>Egress</span><span id="proxy"></span></div>
+      <div class="kv"><span>Exit IP</span><span id="exitip">not checked</span></div>
+      <div class="kv"><span>Profile</span><span id="profile"></span></div>
+      <button class="re" id="checkegress" style="margin-top:.5rem">Check egress</button>
+      <div class="hint">Switching mode relaunches Chrome, because proxy and profile are fixed at launch.</div>
+      <div class="modebtns" style="margin-top:.5rem">
+        <button class="re" data-mode="research">research</button>
+        <button class="re" data-mode="identity">identity</button>
+        <button class="re" data-mode="direct">direct</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Browser</h2>
+      <div class="kv"><span>Attached</span><span id="attached"></span></div>
+      <div class="kv"><span>Current URL</span><span id="url"></span></div>
+      <div class="kv"><span>Last HTTP</span><span id="httpstatus"></span></div>
+    </div>
+    <div class="card">
+      <h2>Lock</h2>
+      <div class="kv"><span>Status</span><span id="busy"></span></div>
+      <div class="kv"><span>Held by</span><span id="holder"></span></div>
+    </div>
+    <div class="card">
+      <h2>Bandwidth this run</h2>
+      <div id="bw"><span class="hint">nothing yet</span></div>
+      <div class="hint">Estimated from Content-Length. Residential is metered and datacenter is not.</div>
+    </div>
+    <div class="card">
+      <h2>Profile</h2>
+      <div class="hint">Primary: log in via the live view above, and the profile keeps it. These act on the <b>active mode's</b> profile.</div>
+      <button class="re" id="restart" style="margin-top:.5rem">Restart browser</button>
+      <input type="file" id="tar" accept=".tar,.tar.gz,.tgz" style="display:none">
+      <button class="re" id="reseed" style="margin-top:.5rem">Re-seed from export…</button>
+      <div class="hint" id="reseedmsg"></div>
+    </div>
+  </aside>
+</main>
+<script>
+  const NOVNC = '/vnc/vnc.html?path=vnc/websockify&autoconnect=true&resize=scale&reconnect=true&show_dot=true';
+  const $ = id => document.getElementById(id);
+  function setDot(el, cls, txt){ el.innerHTML = '<span class="dot '+cls+'"></span>'+txt; }
+  const kb = n => n > 1048576 ? (n/1048576).toFixed(1)+' MB' : Math.round(n/1024)+' KB';
+
+  async function tick(){
+    try {
+      const r = await fetch('/api/status'); if(!r.ok) throw 0;
+      const s = await r.json();
+      $('attached').textContent = s.attached ? 'yes' : 'no';
+      $('url').textContent = s.current_url || 'none';
+      $('httpstatus').textContent = s.last_http_status ?? 'none';
+      $('proxy').textContent = s.proxy || 'none';
+      $('profile').textContent = (s.profile || 'none').replace(/^.*\/(?=var\/)/, '');
+      $('busy').textContent = s.busy ? 'busy' : 'idle';
+      $('holder').textContent = s.holder || 'none';
+      $('mode').textContent = s.mode || 'none';
+      $('isident').textContent = s.identity ? 'YES' : 'no';
+      const badge = $('modebadge');
+      badge.textContent = s.mode || 'none';
+      badge.className = 'mode ' + (s.mode || 'research');
+
+      const bw = s.bandwidth || {};
+      const modes = Object.keys(bw);
+      $('bw').innerHTML = modes.length
+        ? modes.map(m => '<div class="kv"><span>'+m+'</span><span>'+kb(bw[m].total)+'</span></div>').join('')
+        : '<span class="hint">nothing yet</span>';
+
+      if (s.attached && s.busy) setDot($('state'),'busy','running: '+(s.holder||'?'));
+      else if (s.attached) setDot($('state'),'on','ready');
+      else setDot($('state'),'off', s.last_error ? 'detached' : 'starting…');
+      const vnc = $('vnc');
+      if (s.attached && vnc.src === 'about:blank') vnc.src = NOVNC;
+    } catch(e){ setDot($('state'),'off','unreachable'); }
+  }
+
+  // Activity feed over SSE. Reconnects itself, since the browser restarts on every
+  // mode switch and the stream dies with it.
+  let es;
+  function connectFeed(){
+    if (es) es.close();
+    es = new EventSource('/api/activity/stream');
+    es.onmessage = ev => {
+      let d; try { d = JSON.parse(ev.data); } catch(e){ return; }
+      const feed = $('feed');
+      const near = feed.scrollTop + feed.clientHeight > feed.scrollHeight - 40;
+      const row = document.createElement('div');
+      const cls = {error:'e', skip:'s', switch:'m', mode:'m', reseed:'m'}[d.kind] || '';
+      row.className = cls;
+      const t = new Date(d.ts*1000).toTimeString().slice(0,8);
+      row.innerHTML = '<span class="t"></span><span class="a"></span><span class="d"></span>';
+      row.children[0].textContent = t;
+      row.children[1].textContent = (d.action || d.kind || '') + (d.holder ? ' by '+d.holder : '');
+      row.children[2].textContent = d.detail || '';
+      feed.appendChild(row);
+      while (feed.childElementCount > 300) feed.removeChild(feed.firstChild);
+      if (near) feed.scrollTop = feed.scrollHeight;
+    };
+    es.onerror = () => { es.close(); setTimeout(connectFeed, 4000); };
+  }
+
+  $('fs').onclick = () => {
+    const v = $('view');
+    if (v.requestFullscreen) v.requestFullscreen().catch(()=>window.open(NOVNC,'_blank'));
+    else window.open(NOVNC,'_blank');
+  };
+  $('pop').onclick = () => window.open(NOVNC, '_blank');
+
+  $('checkegress').onclick = async () => {
+    $('exitip').textContent = 'checking…';
+    try {
+      const r = await fetch('/api/egress'); const j = await r.json();
+      $('exitip').textContent = j.ok ? (j.exit_ip || 'ok') : ('Failed: '+(j.detail||j.error||''));
+    } catch(e){ $('exitip').textContent = 'check failed'; }
+  };
+
+  document.querySelectorAll('.modebtns .re').forEach(b => {
+    b.onclick = async () => {
+      const m = b.dataset.mode;
+      if (m === 'identity' && !confirm('Switch to IDENTITY mode?\n\nThe browser will relaunch with your real profile on the residential IP, and anything it does is done as you.')) return;
+      $('reseedmsg').textContent = 'switching to '+m+'…';
+      const r = await fetch('/api/browser/restart?mode='+encodeURIComponent(m), {method:'POST'});
+      const j = await r.json();
+      $('reseedmsg').textContent = j.ok ? ('now in '+j.mode) : ('error: '+(j.error||''));
+      $('exitip').textContent = 'not checked';
+    };
+  });
+
+  const msg = $('reseedmsg');
+  $('restart').onclick = async () => {
+    msg.textContent = 'restarting…';
+    const r = await fetch('/api/browser/restart', {method:'POST'});
+    const j = await r.json(); msg.textContent = j.ok ? 'restarted.' : ('error: '+(j.error||''));
+  };
+  $('reseed').onclick = () => {
+    if (!confirm('Wipe the ACTIVE mode’s profile and import a Chrome profile export? Log-ins in that profile are lost.')) return;
+    $('tar').click();
+  };
+  $('tar').onchange = async (e) => {
+    const f = e.target.files[0]; if (!f) return;
+    msg.textContent = 'uploading '+f.name+'…';
+    const fd = new FormData(); fd.append('profile', f);
+    const r = await fetch('/api/browser/reseed', {method:'POST', body: fd});
+    const j = await r.json(); msg.textContent = j.ok ? 'reseeded + restarted.' : ('error: '+(j.error||''));
+  };
+
+  tick(); setInterval(tick, 2000); connectFeed();
+</script>
+</body>
+</html>

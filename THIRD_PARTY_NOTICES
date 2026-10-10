@@ -1,0 +1,17 @@
+Third-party notices for g-browser
+
+The code in this repo is licensed under PolyForm Noncommercial 1.0.0 (see
+LICENSE). This repo copies in no third-party code. You install the software
+below separately, and each keeps its own licence.
+
+Python dependencies, from PyPI
+  FastAPI (MIT), Uvicorn (BSD-3-Clause), Patchright (Apache-2.0), HTTPX
+  (BSD-3-Clause) and python-multipart (Apache-2.0).
+
+System software the host provides
+  Google Chrome, which Patchright launches. Google's own terms apply.
+  noVNC (MPL-2.0) and websockify (LGPL-3.0) from the system packages.
+  deploy/gbrowser-novnc.service serves them and vncproxy.py proxies them
+  unchanged.
+  Xvfb (X11 licence) and x11vnc (GPL-2.0), which the deploy units run as
+  separate processes.

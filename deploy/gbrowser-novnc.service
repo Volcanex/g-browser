@@ -1,0 +1,19 @@
+# Example unit, one of the four g-browser units (see gbrowser.service). Replace
+# @USER@ with the account that runs gbrowser.service, copy to
+# /etc/systemd/system/ and enable it.
+[Unit]
+Description=gbrowser: websockify/noVNC web client on loopback :6080 -> VNC :5900
+After=gbrowser-x11vnc.service
+Requires=gbrowser-x11vnc.service
+
+[Service]
+Type=simple
+# Serves the noVNC web client and bridges its websocket to x11vnc. Loopback
+# only; the app proxies /vnc/ here (vncproxy.py) after checking the panel
+# cookie. Never proxy this port from nginx.
+ExecStart=/usr/bin/websockify --web /usr/share/novnc 127.0.0.1:6080 127.0.0.1:5900
+Restart=on-failure
+User=@USER@
+
+[Install]
+WantedBy=multi-user.target
