@@ -10,7 +10,7 @@ old name, because consumers and live config call them by it.
 - **Service:** `gbrowser`
 - **URL:** per instance, `GBROWSER_PANEL_URL`
 - **Port:** 8098
-- **Licence:** PolyForm Noncommercial 1.0.0 (`LICENSE`), source-available. Third-party code is listed in `THIRD_PARTY_NOTICES`.
+- **Licence:** GNU AGPL v3.0 only (`LICENSE`), open source. Third-party code is listed in `THIRD_PARTY_NOTICES`.
 
 One always-on, headful Chrome, exposed as a job service. Built because
 G-System keeps hitting **human-only UIs** that have no API, such as a supplier

@@ -6,8 +6,7 @@ supplier's "source product" button or a long multi-step form. Any project on the
 host can send `POST /run` with a list of steps and get the result back. The
 stealth, the proxy egress and the logged-in profile stay inside this service.
 
-This repo is source-available under the PolyForm Noncommercial 1.0.0 licence.
-It is not open source.
+This repo is open source under the GNU Affero General Public License v3.0.
 
 ## How it works
 
@@ -40,5 +39,6 @@ python3 -m venv .venv
 
 ## Licence
 
-PolyForm Noncommercial 1.0.0, see `LICENSE`. Copyright Gabriel Penman.
-Dependencies keep their own licences, listed in `THIRD_PARTY_NOTICES`.
+Copyright (C) 2026 Gabriel Penman. Licensed under the GNU Affero General
+Public License v3.0 only, see `LICENSE`. Dependencies keep their own licences,
+listed in `THIRD_PARTY_NOTICES`.

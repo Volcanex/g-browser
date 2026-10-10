@@ -1,8 +1,8 @@
 Third-party notices for g-browser
 
-The code in this repo is licensed under PolyForm Noncommercial 1.0.0 (see
-LICENSE). This repo copies in no third-party code. You install the software
-below separately, and each keeps its own licence.
+The code in this repo is licensed under the GNU AGPL v3.0 only (see LICENSE).
+This repo copies in no third-party code. You install the software below
+separately, and each keeps its own licence.
 
 Python dependencies, from PyPI
   FastAPI (MIT), Uvicorn (BSD-3-Clause), Patchright (Apache-2.0), HTTPX
