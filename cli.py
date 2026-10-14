@@ -340,8 +340,9 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
 
-    if getattr(args, "mode", None) == "research" and not getattr(args, "fallback", False):
-        print("research mode is retired for agents: use g-scraper; --fallback for the hardest walls",
+    if (getattr(args, "mode", None) == "research" and args.cmd not in ("fetch", "egress")
+            and not getattr(args, "fallback", False)):
+        print("the research browser is retired for agents: use g-scraper; --fallback for the hardest walls",
               file=sys.stderr)
 
     if args.cmd == "status":

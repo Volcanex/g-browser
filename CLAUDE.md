@@ -30,7 +30,7 @@ the migration. Research-mode CLI calls without `--fallback` print this warning
 on stderr:
 
 ```text
-research mode is retired for agents: use g-scraper; --fallback for the hardest walls
+the research browser is retired for agents: use g-scraper; --fallback for the hardest walls
 ```
 
 Use `--fallback` only for the hardest bot walls that g-scraper cannot pass:
@@ -233,7 +233,7 @@ never matches.
 holding the service token could attach the passport (`gp-core/.env`) to a web
 form and exfiltrate it in one call.
 
-## Fetch: legacy HTTP path
+## Fetch: rotating-IP HTTP
 
 `gbrowser fetch --mode research --url …` does a plain HTTP GET through a mode's
 egress and prints JSON (`url`, `http_status`, `exit_ip`, `bytes`, `body`).
@@ -242,9 +242,12 @@ egress and prints JSON (`url`, `http_status`, `exit_ip`, `bytes`, `body`).
 it does not queue behind whoever is holding the browser and cannot be starved by
 a long-running session.
 
-Use g-scraper for public fetching. This command remains for compatibility and
-does not submit a browser job or consume the fallback budget. Research-mode
-calls still print the retirement warning.
+This is a supported path, not legacy: it is the rotating datacenter-IP pool, the
+one thing g-scraper (bare host IP, no proxy) does not have. g-jobs pages through
+LinkedIn's guest search with it, where a single IP would be rate limited. Use it
+for high-volume fetches that need IP rotation; use g-scraper for everything else
+public. It does not submit a browser job, take the lock, consume the fallback
+budget, or print the retirement warning.
 
 `--rotate` takes a new exit IP first. It is **refused for `identity`**, and that
 refusal is load-bearing: identity's `cf_clearance` and `datadome` cookies are

@@ -27,7 +27,7 @@ logged-in sessions, and other tasks a human would have to click.
 
 ## Modes: pick deliberately
 
-    research   retired for agents, datacenter IP, explicit fallback only
+    research   browser retired for agents (--fallback only); `fetch` stays as the rotating-IP HTTP pool
     identity   the owner's real profile, static residential IP, acts as them
     direct     no proxy, bare host IP, development only
 
@@ -67,7 +67,7 @@ rolling hour; job results also include `bytes`. Byte counts are Content-Length
 estimates, so chunked responses and proxy overhead are not measured.
 
 Research-mode CLI calls without `--fallback` still work for compatibility but
-warn on stderr: `research mode is retired for agents: use g-scraper; --fallback for the hardest walls`.
+warn on stderr: `the research browser is retired for agents: use g-scraper; --fallback for the hardest walls`.
 
 ## The loop
 
