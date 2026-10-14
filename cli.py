@@ -35,6 +35,7 @@ import urllib.error
 import urllib.request
 
 import assist
+from browser.fallback import EXIT_BUDGET
 
 BASE = os.environ.get("GBROWSER_URL", "http://127.0.0.1:8098")
 
@@ -64,7 +65,15 @@ def post(path: str, payload: dict, consumer: str, timeout=300):
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.load(r)
     except urllib.error.HTTPError as e:
-        sys.exit(f"gbrowser {e.code}: {e.read(400).decode('utf-8', 'replace')}")
+        body = e.read().decode("utf-8", "replace")
+        if e.code == 429:
+            try:
+                result = json.loads(body)
+                if result.get("exit_code") == EXIT_BUDGET:
+                    return result
+            except (ValueError, AttributeError):
+                pass
+        sys.exit(f"gbrowser {e.code}: {body[:400]}")
     except urllib.error.URLError as e:
         sys.exit(f"gbrowser unreachable at {BASE}: {e.reason}")
 
@@ -97,6 +106,8 @@ def render(result: dict, args) -> int:
     else:
         _render_human(result, args)
 
+    if result.get("exit_code") == EXIT_BUDGET:
+        return EXIT_BUDGET
     challenge = result.get("challenge") or (result.get("state") or {}).get("challenge")
     if challenge and challenge.get("confidence") in ("high", "medium"):
         return EXIT_CHALLENGE
@@ -141,6 +152,8 @@ def _render_human(result: dict, args):
 def build_job(args) -> dict:
     cmd = args.cmd
     job: dict = {"mode": args.mode}
+    if getattr(args, "fallback", False):
+        job["fallback"] = True
     if getattr(args, "frugal", None) is not None:
         job["frugal"] = args.frugal
     if getattr(args, "timeout", None):
@@ -260,6 +273,8 @@ def main(argv=None):
         p.add_argument("--url", help="navigate here first")
         p.add_argument("--timeout", type=float, help="job budget in seconds")
         p.add_argument("--frugal", choices=["true", "false", "strict"], default=None)
+        p.add_argument("--fallback", action="store_true",
+                       help="throttled fallback for walls g-scraper cannot pass")
         p.add_argument("--max", type=int, default=400, help="snapshot element budget")
         p.add_argument("--then-snapshot", action="store_true",
                        help="snapshot after acting, in the same job")
@@ -325,6 +340,10 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
 
+    if getattr(args, "mode", None) == "research" and not getattr(args, "fallback", False):
+        print("research mode is retired for agents: use g-scraper; --fallback for the hardest walls",
+              file=sys.stderr)
+
     if args.cmd == "status":
         st = get("/health")["status"]
         if args.json:
@@ -337,6 +356,14 @@ def main(argv=None):
             print(f"url       {st['current_url']}")
             for mode, b in (st.get("bandwidth") or {}).items():
                 print(f"bytes     {mode}: {b['total'] / 1048576:.1f} MB")
+            if st.get("last_job"):
+                job = st["last_job"]
+                print(f"last job  {job['mode']} by {job['holder']}: {job['bytes']} bytes (estimate)")
+            if st.get("fallback"):
+                budget = st["fallback"]
+                print(f"fallback  {budget['used']}/{budget['limit']} jobs in the rolling hour")
+                for job in budget["jobs"]:
+                    print(f"  job {job['id']}  {job['mode']} by {job['holder']}: {job['bytes']} bytes (estimate)")
         return EXIT_OK
 
     if args.cmd == "assist":

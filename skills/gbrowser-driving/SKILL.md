@@ -1,6 +1,6 @@
 ---
 name: gbrowser-driving
-description: Use when a task needs a real logged-in browser: filling a web form, applying to a job, operating a UI that has no API, or reading a page that requires a session. Covers the gbrowser CLI, the snapshot-act-verify loop, choosing identity vs research mode, and backing off from bot challenges. Do not use for fetching public data that an HTTP request or a JSON API can supply.
+description: Use for logged-in identity tasks such as filling forms, applying to jobs, or operating a UI with no API, and as a throttled fallback for the hardest bot walls g-scraper cannot pass. Covers the gbrowser CLI, refs, fallback budgets, and stopping on challenges. Public scraping belongs in g-scraper; research mode is retired for agents except explicit fallback jobs.
 ---
 
 # Driving gbrowser
@@ -11,42 +11,76 @@ you decide.
 
 ## Before you reach for it
 
-The browser is the expensive option. It is metered in identity mode, it can only
-serve one caller at a time, and it is the thing that gets IPs flagged. If the
-data you want is available from a JSON endpoint or a plain HTTP fetch, use that
-instead. Greenhouse, Lever and Ashby all publish public job boards as JSON.
+Public scraping belongs in `g-scraper`. Research mode was retired for agents on
+2026-10-14, but remains available for existing g-jobs harvest callers during the
+migration. Use gbrowser for identity tasks, or explicitly as a throttled fallback
+for the hardest bot walls g-scraper cannot pass.
+
+The browser is metered in identity mode and serves one caller at a time. If the
+data is available from a JSON endpoint, use that through the public scraping
+path. Greenhouse, Lever and Ashby all publish public job boards as JSON.
 Reading listings through a 2MB single-page app when a 20KB API exists is the most
 common way to waste this resource.
 
-Use gbrowser for what genuinely has no API: filling and submitting forms,
-anything behind a login, anything a human would have to click.
+Use identity mode for filling and submitting forms under the owner's name,
+logged-in sessions, and other tasks a human would have to click.
 
 ## Modes: pick deliberately
 
-    research   throwaway profile, cheap datacenter IP, no identity attached
-    identity   the owner's real profile, static residential IP, ACTS AS THEM
+    research   retired for agents, datacenter IP, explicit fallback only
+    identity   the owner's real profile, static residential IP, acts as them
     direct     no proxy, bare host IP, development only
 
 `--mode` is required and has no default. That is on purpose: a caller who forgets
 to think about it would otherwise borrow the owner's identity by accident.
 
-**Default to `research`.** Only use `identity` when the task genuinely requires
-being the owner: a logged-in session, or submitting something under their name.
+Use `identity` when the task requires being the owner. For public scraping use
+g-scraper, and only use `research --fallback` when it cannot pass a hard wall.
 Switching mode relaunches Chrome (~10s), so batch work by mode rather than
 alternating.
+
+## Throttled fallback
+
+```sh
+gbrowser snapshot --mode research --fallback --url https://example.com
+gbrowser screenshot --mode research --fallback --labels --url https://example.com
+```
+
+Every browser job in the fallback flow needs `--fallback`, including follow-up
+clicks, reads and screenshots. API consumers send `"fallback": true` on `/run`.
+Flagged non-identity jobs share 20 admissions per rolling hour, configured by
+`GBROWSER_FALLBACK_PER_HOUR`. Failed and queued jobs count too. The server
+persists admissions and byte records in `var/fallback.sqlite3`, so a restart
+does not reset the budget. Identity jobs are exempt.
+
+Exit **9** means the budget is exhausted. Stop and defer until the UTC time in
+the error; JSON includes `retry_at` and `retry_after_s`. The API returns HTTP
+429 with `Retry-After`. Refusal happens before waiting for the browser lock.
+
+Fallback jobs enforce strict blocking of images, media and fonts. A labelled
+screenshot allows images for its whole job while still blocking media and
+fonts. If an earlier strict job blocked images, navigate again in the labelled
+screenshot job. `--frugal false` cannot override fallback blocking.
+
+`gbrowser status` shows budget usage and bytes for each fallback job in the
+rolling hour; job results also include `bytes`. Byte counts are Content-Length
+estimates, so chunked responses and proxy overhead are not measured.
+
+Research-mode CLI calls without `--fallback` still work for compatibility but
+warn on stderr: `research mode is retired for agents: use g-scraper; --fallback for the hardest walls`.
 
 ## The loop
 
 Snapshot, act on a ref, verify. Never act blind.
 
 ```sh
-gbrowser snapshot --mode research --url https://example.com/apply
+gbrowser snapshot --mode identity --url https://example.com/apply
 #   [e20] textbox "Email"  (required, empty)
 #   [e24] button  "Attach"
 #   [e57] button  "Submit application"
 
-gbrowser fill --mode research --ref e20 --value "someone@example.com"
-gbrowser click --mode research --ref e24 --then-snapshot
+gbrowser fill --mode identity --ref e20 --value "someone@example.com"
+gbrowser click --mode identity --ref e24 --then-snapshot
 ```
 
 `--then-snapshot` acts and re-perceives in a single job, which saves a round trip
@@ -61,7 +95,7 @@ protecting you from is clicking the wrong control.
 ## When you get confused
 
 ```sh
-gbrowser screenshot --mode research --labels
+gbrowser screenshot --mode identity --labels
 ```
 
 Draws the `e`-numbers onto the image, so what you see maps to what you can click.
@@ -71,7 +105,7 @@ the bytes, because a 1080p PNG is a large slice of your context.
 ## Backing off
 
 ```sh
-gbrowser challenge --mode research     # exit 3 means walled
+gbrowser challenge --mode identity     # exit 3 means walled
 ```
 
 Every command exits **3** when a bot wall is detected, distinct from **1** for an
@@ -137,14 +171,15 @@ labelled "Attach", `--chooser` is the fix.
 
 ## Other things worth knowing
 
-- `gbrowser status`: mode, egress, lock holder, bandwidth used.
+- `gbrowser status`: mode, egress, lock holder, bandwidth, fallback budget and
+  per-job bytes.
 - `gbrowser egress --mode identity`: probes the proxy and reports the live exit
   IP without launching the browser.
 - `gbrowser run --steps -`: pipe a JSON step list for a long sequence.
 - Jobs have a 150s budget by default (`--timeout` to raise). A job that overruns
   fails and releases the browser rather than wedging it.
-- `--frugal strict` blocks images too. Only worth it in identity mode, and it
-  makes screenshots useless, so don't combine it with `--labels`.
+- `--frugal strict` blocks images too. Fallback jobs enforce it automatically
+  except for labelled screenshots, which allow images for that job.
 
 ## Report honestly
 

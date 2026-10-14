@@ -25,6 +25,7 @@ import auth
 import vncproxy
 from browser import modes, proxy
 from browser.core import SHOT_DIR, activity, manager
+from browser.fallback import EXIT_BUDGET
 
 if not auth.COOKIE_VALUE:
     raise SystemExit(
@@ -176,6 +177,7 @@ class RunReq(BaseModel):
     action: str | None = None
     steps: list[dict] | None = None
     frugal: bool | str = True
+    fallback: bool = False
     snapshot_on_error: bool = True
     # Undeclared fields are silently dropped by Pydantic before the manager ever
     # sees them, so anything a job may set has to appear here.
@@ -192,7 +194,11 @@ async def run(req: RunReq, request: Request):
     if req.params:
         job.update(req.params)
         job.pop("params", None)
-    return await manager.run(job, holder=holder)
+    result = await manager.run(job, holder=holder)
+    if result.get("exit_code") == EXIT_BUDGET:
+        return JSONResponse(result, status_code=429,
+                            headers={"Retry-After": str(result["retry_after_s"])})
+    return result
 
 
 @app.api_route("/api/assist/ack/{nonce}", methods=["GET", "POST"])

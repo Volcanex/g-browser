@@ -22,6 +22,48 @@ g-browser is **the hand, not the brain**. It perceives and acts; deciding what t
 do lives in the consumer. The accounts it drives are the owner's own and were
 logged in by the owner, and it acts on the owner's behalf to automate their own work.
 
+## Public scraping and fallback
+
+Research mode was retired for agents on 2026-10-14. Public scraping belongs in
+`g-scraper`. Keep `research` available for existing g-jobs harvest callers during
+the migration. Research-mode CLI calls without `--fallback` print this warning
+on stderr:
+
+```text
+research mode is retired for agents: use g-scraper; --fallback for the hardest walls
+```
+
+Use `--fallback` only for the hardest bot walls that g-scraper cannot pass:
+
+```sh
+gbrowser snapshot --mode research --fallback --url https://example.com
+gbrowser screenshot --mode research --fallback --labels
+```
+
+The API equivalent is `"fallback": true`. Flagged non-identity jobs share a
+server-side rolling-hour budget of 20 jobs, configured by the positive integer
+`GBROWSER_FALLBACK_PER_HOUR`. Each admitted job counts, including failures and
+jobs waiting for the browser lock. Identity jobs are exempt. Unflagged legacy
+jobs keep working during migration.
+
+Admission is persisted in `var/fallback.sqlite3` (under `GBROWSER_VAR` when set),
+so restarting never resets the budget. Excess jobs are refused before acquiring
+the browser lock with HTTP 429, `Retry-After`, and CLI exit **9**. The error
+names the UTC time when enough slots expire; JSON also includes `retry_at` and
+`retry_after_s`. Stop and defer until that time.
+
+Fallback jobs force `frugal: "strict"`, even if a caller asks to disable it.
+Images, media and fonts are blocked. A screenshot step with `label_refs: true`
+(`screenshot --labels`) instead uses normal frugal blocking for the whole job:
+images are allowed, while media and fonts remain blocked. Navigate in that same
+labelled screenshot job if images were blocked by an earlier job.
+
+Job results include `bytes`. `gbrowser status` shows the last job and every
+fallback job in the rolling hour with its byte count and budget usage. These
+are Content-Length estimates from responses received during the job; chunked
+responses and proxy overhead are not measured. Fallback records persist across
+restarts; the last-job and cumulative bandwidth summaries are in memory.
+
 ## Modes: which persona is wearing the browser
 
 A mode bundles the three things that together make an identity: exit IP, cookie
@@ -86,6 +128,7 @@ friction, not a wall.
   a 2.1MB page load, so blocking them saved 9% while making every screenshot
   useless to a vision model. Media and fonts are still blocked. `frugal:"strict"`
   restores the old set when residential bytes matter more than seeing the page.
+  Fallback jobs enforce strict blocking except for labelled screenshots.
 
 ## Perception: how a weak agent drives it
 
@@ -190,7 +233,7 @@ never matches.
 holding the service token could attach the passport (`gp-core/.env`) to a web
 form and exfiltrate it in one call.
 
-## fetch: the cheap path, and usually the right one
+## Fetch: legacy HTTP path
 
 `gbrowser fetch --mode research --url …` does a plain HTTP GET through a mode's
 egress and prints JSON (`url`, `http_status`, `exit_ip`, `bytes`, `body`).
@@ -199,11 +242,9 @@ egress and prints JSON (`url`, `http_status`, `exit_ip`, `bytes`, `body`).
 it does not queue behind whoever is holding the browser and cannot be starved by
 a long-running session.
 
-Reach for this *before* the browser. A page whose content arrives in the server's
-HTML does not need a browser to read it, and driving Chrome to read it costs the
-lock, the identity session's reputation, and 10s of relaunch if the mode has to
-change. A consumer can read logged-out search results this way and keep the
-browser for the part that genuinely needs a login.
+Use g-scraper for public fetching. This command remains for compatibility and
+does not submit a browser job or consume the fallback budget. Research-mode
+calls still print the retirement warning.
 
 `--rotate` takes a new exit IP first. It is **refused for `identity`**, and that
 refusal is load-bearing: identity's `cf_clearance` and `datadome` cookies are
@@ -249,6 +290,8 @@ Webshare dashboard. For `identity` that is a forced cookie burn every 30 days;
   page-side resolution detection, the ack nonce, the JSONL record.
 - `browser/core.py`: `BrowserManager`: launch/attach, lock, timeouts, the action
   set, the bandwidth meter, the activity ring buffer.
+- `browser/fallback.py`: persistent rolling-hour fallback admission and per-job
+  byte records.
 - `browser/modes.py`: the three personas and the no-default rule.
 - `browser/snapshot.py`: the injected perception library: ref walker, ref
   resolution, challenge detection, screenshot overlay.
@@ -276,6 +319,7 @@ Env comes from the passport (`@INSTANCE_ENV@`, usually `gp-core/.env`) then
 `var/` beside this file unless `GBROWSER_VAR` points elsewhere. The admin cookie
 secret `GBROWSER_COOKIE_VALUE` comes from `/etc/g-secrets/gbrowser-admin.env`
 (or `.env` here). Without it the service will not start.
+`GBROWSER_FALLBACK_PER_HOUR` defaults to 20 and can be set in `.env` here.
 
 Tests: `.venv/bin/python -m pytest tests/test_unit.py` (pure logic) and
 `.venv/bin/python tests/smoke_phase1.py` against the live service.
@@ -288,8 +332,8 @@ pays for its MCP face buys nothing here. `POST /run` stays the seam if that ever
 changes.
 
 ```sh
-gbrowser snapshot --mode research --url https://example.com/apply
-gbrowser click --mode research --ref e24 --then-snapshot
+gbrowser snapshot --mode identity --url https://example.com/apply
+gbrowser click --mode identity --ref e24 --then-snapshot
 gbrowser upload --mode identity --ref e24 --chooser --file var/uploads/document.pdf
 gbrowser status | egress --mode identity | modes
 ```
@@ -297,7 +341,8 @@ gbrowser status | egress --mode identity | modes
 `--mode` is required, mirroring the no-default rule. Exit codes: **0** ok,
 **1** failed, **3** bot wall detected - distinct so a shell loop can tell "this
 failed" from "stop, we have been walled". Retrying into a challenge is how IPs
-get burned. `assist` adds **7** (nobody came) and **8** (quiet hours).
+get burned. **9** means the fallback budget is exhausted; defer until the time
+reported in the error. `assist` adds **7** (nobody came) and **8** (quiet hours).
 
 The driving skill lives in `skills/gbrowser-driving/`, symlinked into
 `g-env/claude/skills/` so any session loads it.
@@ -307,7 +352,7 @@ The driving skill lives in `skills/gbrowser-driving/`, symlinked into
 `POST /run` with a mode and either a single action or a sequence:
 
 ```json
-{ "mode": "research",
+{ "mode": "identity",
   "url": "https://job-boards.greenhouse.io/example/jobs/123",
   "timeout_s": 150,
   "steps": [

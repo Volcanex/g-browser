@@ -1,7 +1,9 @@
 """Fast unit tests: pure logic, no browser or network."""
 import importlib
+import asyncio
 import json
 import os
+from contextlib import closing
 
 import pytest
 
@@ -357,3 +359,229 @@ def test_push_without_panel_url_still_notifies(monkeypatch):
 class _Ctx:
     def __enter__(self): return self
     def __exit__(self, *a): return False
+
+
+# ---- fallback -------------------------------------------------------------
+
+def _fallback(tmp_path, monkeypatch, limit=20):
+    from browser.fallback import FallbackBudget
+    monkeypatch.setenv("GBROWSER_FALLBACK_PER_HOUR", str(limit))
+    return FallbackBudget(str(tmp_path / "fallback.sqlite3"))
+
+
+def test_fallback_default_budget_refuses_the_21st(tmp_path, monkeypatch):
+    from browser.fallback import FallbackBudget
+    monkeypatch.delenv("GBROWSER_FALLBACK_PER_HOUR", raising=False)
+    budget = FallbackBudget(str(tmp_path / "fallback.sqlite3"))
+    for i in range(20):
+        assert budget.reserve("research", f"caller-{i}")["ok"]
+    refused = budget.reserve("direct", "another-caller")
+    assert refused["ok"] is False
+    assert refused["exit_code"] == 9
+    assert "budget frees at" in refused["error"]
+    assert 0 < refused["retry_after_s"] <= 3600
+    assert budget.status()["used"] == 20
+
+
+def test_fallback_window_rolls_and_expires_at_the_boundary(tmp_path, monkeypatch):
+    import browser.fallback as fallback
+    budget = _fallback(tmp_path, monkeypatch, 2)
+    clock = [1000.0]
+    monkeypatch.setattr(fallback.time, "time", lambda: clock[0])
+    assert budget.reserve("research", "first")["ok"]
+    clock[0] = 2800
+    assert budget.reserve("research", "second")["ok"]
+    clock[0] = 4599.5
+    refused = budget.reserve("research", "third")
+    assert refused["retry_at"] == 4600
+    assert refused["retry_after_s"] == 1
+    clock[0] = 4600
+    assert budget.reserve("research", "third")["ok"]
+    assert [j["holder"] for j in budget.status()["jobs"]] == ["second", "third"]
+
+
+def test_fallback_restart_preserves_failed_jobs_and_bytes(tmp_path, monkeypatch):
+    from browser.fallback import FallbackBudget
+    budget = _fallback(tmp_path, monkeypatch, 1)
+    admitted = budget.reserve("research", "test")
+    budget.finish(admitted["job_id"], 1234, False)
+    restarted = FallbackBudget(budget.path)
+    assert restarted.reserve("research", "test")["exit_code"] == 9
+    status = restarted.status()
+    assert status["remaining"] == 0
+    assert status["jobs"][0]["bytes"] == 1234
+    assert status["jobs"][0]["ok"] == 0
+
+
+def test_fallback_lowered_limit_reports_when_enough_jobs_expire(tmp_path, monkeypatch):
+    import browser.fallback as fallback
+    budget = _fallback(tmp_path, monkeypatch, 2)
+    monkeypatch.setattr(fallback.time, "time", lambda: 1000)
+    budget.reserve("research", "first")
+    monkeypatch.setattr(fallback.time, "time", lambda: 1100)
+    budget.reserve("research", "second")
+    smaller = _fallback(tmp_path, monkeypatch, 1)
+    assert smaller.reserve("research", "third")["retry_at"] == 4700
+
+
+@pytest.mark.parametrize("limit", ["0", "-1", "invalid"])
+def test_fallback_requires_a_positive_integer(tmp_path, monkeypatch, limit):
+    from browser.fallback import FallbackBudget
+    monkeypatch.setenv("GBROWSER_FALLBACK_PER_HOUR", limit)
+    with pytest.raises(ValueError):
+        FallbackBudget(str(tmp_path / "fallback.sqlite3"))
+
+
+def test_fallback_admission_is_atomic_across_callers(tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    budget = _fallback(tmp_path, monkeypatch, 2)
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        results = list(workers.map(lambda i: budget.reserve("research", str(i)), range(8)))
+    assert sum(result["ok"] for result in results) == 2
+    assert sum(result.get("exit_code") == 9 for result in results) == 6
+    assert budget.status()["used"] == 2
+
+
+def _fallback_manager(tmp_path, monkeypatch):
+    import browser.core as core
+    monkeypatch.setattr(core, "VAR", str(tmp_path))
+    monkeypatch.setenv("GBROWSER_FALLBACK_PER_HOUR", "1")
+    manager = core.BrowserManager()
+    manager.mode = core.modes.RESEARCH
+    manager.attached = True
+    return manager
+
+
+def test_fallback_refuses_before_waiting_for_the_browser_lock(tmp_path, monkeypatch):
+    manager = _fallback_manager(tmp_path, monkeypatch)
+    manager.fallback.reserve("research", "test")
+
+    async def check():
+        async with manager._lock:
+            result = await asyncio.wait_for(manager.run(
+                {"mode": "research", "fallback": True, "action": "snapshot"}), timeout=0.1)
+        assert result["exit_code"] == 9
+        assert manager.holder is None
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("mode,flag", [("identity", True), ("research", False)])
+def test_fallback_exempts_identity_and_unflagged_legacy_jobs(tmp_path, monkeypatch, mode, flag):
+    from browser import modes
+    manager = _fallback_manager(tmp_path, monkeypatch)
+    manager.mode = modes.resolve(mode)
+    monkeypatch.setattr(manager.fallback, "reserve", lambda *a: pytest.fail("budget charged"))
+
+    async def run_steps(*args):
+        return {"ok": True}
+
+    monkeypatch.setattr(manager, "_run_steps", run_steps)
+    assert asyncio.run(manager.run({"mode": mode, "fallback": flag, "action": "snapshot"}))["ok"]
+    assert manager.fallback.status()["used"] == 0
+
+
+@pytest.mark.parametrize("mode", ["research", "direct"])
+@pytest.mark.parametrize("labelled", [False, True])
+def test_fallback_enforces_blocking_and_records_job_bytes(tmp_path, monkeypatch, mode, labelled):
+    from types import SimpleNamespace
+    from browser import core, modes
+    manager = _fallback_manager(tmp_path, monkeypatch)
+    manager.mode = modes.resolve(mode)
+    blocked = []
+
+    class Page:
+        url = "https://example.com"
+
+        async def route(self, pattern, handler):
+            for kind in ("image", "media", "font", "document"):
+                async def abort():
+                    blocked.append(kind)
+                async def proceed():
+                    pass
+                await handler(SimpleNamespace(request=SimpleNamespace(resource_type=kind),
+                                              abort=abort, continue_=proceed))
+
+        async def unroute(self, *args):
+            pass
+
+    manager._page = Page()
+
+    async def action(step):
+        manager._on_response(SimpleNamespace(
+            url="https://example.com", headers={"content-length": "321"}, status=200,
+            request=SimpleNamespace(is_navigation_request=lambda: False)))
+        return {"done": True}
+
+    async def detect(page):
+        return None
+
+    monkeypatch.setattr(manager, "_do", action)
+    monkeypatch.setattr(core.snapshot, "detect", detect)
+    steps = [{"action": "screenshot", "label_refs": labelled}]
+    result = asyncio.run(manager.run({"mode": mode, "fallback": True,
+                                     "frugal": False, "steps": steps}))
+    assert result["ok"]
+    assert blocked == (["media", "font"] if labelled else ["image", "media", "font"])
+    assert result["bytes"] == 321
+    assert manager.status()["last_job"]["bytes"] == 321
+    assert manager.status()["fallback"]["jobs"][0]["bytes"] == 321
+    assert manager._job_bytes is None
+
+
+def test_fallback_failed_browser_start_still_counts(tmp_path, monkeypatch):
+    manager = _fallback_manager(tmp_path, monkeypatch)
+    manager.attached = False
+    result = asyncio.run(manager.run({"mode": "research", "fallback": True, "action": "snapshot"}))
+    assert not result["ok"]
+    assert result["bytes"] == 0
+    assert manager.fallback.status()["used"] == 1
+    assert manager.fallback.status()["jobs"][0]["ok"] == 0
+
+
+@pytest.mark.parametrize("flag", [False, True])
+def test_cli_research_warning_and_fallback_payload(monkeypatch, capsys, flag):
+    import cli
+    jobs = []
+    monkeypatch.setattr(cli, "post", lambda path, job, **kw: jobs.append(job) or {"ok": True})
+    code = cli.main(["snapshot", "--mode", "research"] + (["--fallback"] if flag else []))
+    assert code == 0
+    assert jobs[0].get("fallback", False) == flag
+    assert capsys.readouterr().err == ("" if flag else
+        "research mode is retired for agents: use g-scraper; --fallback for the hardest walls\n")
+
+
+def test_cli_preserves_budget_exit_code_from_http_429(monkeypatch, capsys):
+    import io
+    import cli
+    from urllib.error import HTTPError
+    result = {"ok": False, "exit_code": 9, "error": "fallback budget exhausted; budget frees at 12:00 UTC"}
+
+    def refuse(*args, **kwargs):
+        raise HTTPError("http://example.com/run", 429, "Too Many Requests", {},
+                        io.BytesIO(json.dumps(result).encode()))
+
+    monkeypatch.setattr(cli, "token", lambda: "test")
+    monkeypatch.setattr(cli.urllib.request, "urlopen", refuse)
+    assert cli.main(["snapshot", "--mode", "research", "--fallback"]) == 9
+    assert "budget frees at" in capsys.readouterr().err
+
+
+def test_fallback_api_field_and_retry_header(tmp_path, monkeypatch):
+    import auth
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(auth, "COOKIE_VALUE", "test-cookie")
+    monkeypatch.setenv("GBROWSER_SERVICE_TOKEN", "test-token")
+    server = importlib.import_module("server")
+    manager = _fallback_manager(tmp_path, monkeypatch)
+    manager.attached = False
+    monkeypatch.setattr(server, "manager", manager)
+    # Do not enter TestClient itself: that would launch real Chrome.
+    with closing(TestClient(server.app)) as client:
+        headers = {"X-Gbrowser-Token": "test-token"}
+        job = {"mode": "research", "fallback": True, "action": "snapshot"}
+        assert client.post("/run", json=job, headers=headers).status_code == 200
+        refused = client.post("/run", json=job, headers=headers)
+        assert refused.status_code == 429
+        assert refused.json()["exit_code"] == 9
+        assert int(refused.headers["Retry-After"]) > 0

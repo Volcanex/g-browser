@@ -42,6 +42,7 @@ from collections import deque
 from urllib.parse import urlparse
 
 from . import modes, proxy, snapshot
+from .fallback import FallbackBudget
 
 VAR = os.environ.get("GBROWSER_VAR") or os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "var")
 SHOT_DIR = os.path.join(VAR, "shots")
@@ -156,6 +157,9 @@ class BrowserManager:
         self._sigs: dict[str, str] = {}               # ref -> signature, last snapshot
         self._bytes: dict[str, dict[str, int]] = {}   # mode -> host -> bytes
         self._last_status = None                      # last main-frame document status
+        self._job_bytes = None
+        self._last_job = None
+        self.fallback = FallbackBudget(os.path.join(VAR, "fallback.sqlite3"))
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -222,6 +226,8 @@ class BrowserManager:
                     per_mode = self._bytes.setdefault(self.mode.name, {})
                     host = _host(response.url)
                     per_mode[host] = per_mode.get(host, 0) + n
+                    if self._job_bytes is not None:
+                        self._job_bytes += n
             req = response.request
             if req.is_navigation_request() and req.frame.parent_frame is None:
                 self._last_status = response.status
@@ -301,6 +307,8 @@ class BrowserManager:
             "last_http_status": self._last_status,
             "started_at": self.started_at,
             "bandwidth": self.bandwidth(),
+            "last_job": self._last_job,
+            "fallback": self.fallback.status(),
             "modes": modes.describe(),
         }
 
@@ -316,7 +324,7 @@ class BrowserManager:
     async def run(self, job: dict, holder: str = "unknown") -> dict:
         """Run one job under the global lock.
 
-        A job is `{mode, url?, steps:[...], frugal?}` or a single-action
+        A job is `{mode, url?, steps:[...], frugal?, fallback?}` or a single-action
         shorthand. `mode` is required. See modes.py for why there is no default.
         """
         try:
@@ -327,15 +335,29 @@ class BrowserManager:
         steps = job.get("steps")
         if steps is None:
             steps = [{k: v for k, v in job.items()
-                      if k not in ("url", "frugal", "mode", "snapshot_on_error")}]
+                      if k not in ("url", "frugal", "mode", "snapshot_on_error", "fallback")}]
         frugal = job.get("frugal", True)
+        fallback = job.get("fallback", False)
+        if fallback:
+            labelled = any(step.get("action") == "screenshot" and step.get("label_refs")
+                           for step in steps)
+            frugal = True if labelled else "strict"
         url = job.get("url")
         want_snapshot = job.get("snapshot_on_error", True)
         budget = min(float(job.get("timeout_s", JOB_TIMEOUT)), JOB_TIMEOUT_MAX)
 
+        job_id = None
+        if fallback and not mode.identity:
+            reservation = self.fallback.reserve(mode.name, holder)
+            if not reservation["ok"]:
+                return reservation
+            job_id = reservation["job_id"]
+
         async with self._lock:
             self.holder = holder
             self.holder_since = time.time()
+            self._job_bytes = 0
+            result = None
             switched = None
             try:
                 if not self.mode or self.mode.name != mode.name:
@@ -344,28 +366,40 @@ class BrowserManager:
                     r = await self._relaunch(mode.name)
                     switched = mode.name
                     if not r["ok"]:
-                        return {"ok": False, "error": f"could not switch to {mode.name}: {r['error']}"}
+                        result = {"ok": False, "error": f"could not switch to {mode.name}: {r['error']}"}
+                        return result
                 if not self.attached:
-                    return {"ok": False, "error": self.last_error or "browser not attached"}
+                    result = {"ok": False, "error": self.last_error or "browser not attached"}
+                    return result
                 try:
-                    return await asyncio.wait_for(
+                    result = await asyncio.wait_for(
                         self._run_steps(steps, url, frugal, holder, mode, switched, want_snapshot),
                         timeout=budget,
                     )
+                    return result
                 except asyncio.TimeoutError:
                     # The lock is released by the `async with` regardless, which
                     # is the point: one wedged job must never take the shared
                     # browser down with it.
                     activity.add(kind="error", mode=mode.name, holder=holder,
                                  action="timeout", detail=f"job exceeded {budget}s")
-                    return await self._failure(
+                    result = await self._failure(
                         TimeoutError(f"job exceeded its {budget}s budget, so the page may be stuck "
                                      "(a bot wall that keeps re-navigating does this)"),
                         -1, [], holder, mode, switched, want_snapshot,
                     )
+                    return result
             finally:
+                self._last_job = {"mode": mode.name, "holder": holder,
+                                  "started_at": self.holder_since, "fallback": bool(fallback),
+                                  "bytes": self._job_bytes, "ok": bool(result and result.get("ok"))}
+                if result is not None:
+                    result["bytes"] = self._job_bytes
+                self._job_bytes = None
                 self.holder = None
                 self.holder_since = None
+                if job_id is not None:
+                    self.fallback.finish(job_id, self._last_job["bytes"], self._last_job["ok"])
 
     async def _run_steps(self, steps, url, frugal, holder, mode, switched, want_snapshot):
         block = _BLOCK_STRICT if str(frugal).lower() == "strict" else (_BLOCK_NORMAL if frugal else set())
