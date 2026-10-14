@@ -1,6 +1,6 @@
 ---
 name: gbrowser-driving
-description: Use for logged-in identity tasks such as filling forms, applying to jobs, or operating a UI with no API, and as a throttled fallback for the hardest bot walls g-scraper cannot pass. Covers the gbrowser CLI, refs, fallback budgets, and stopping on challenges. Public scraping belongs in g-scraper; research mode is retired for agents except explicit fallback jobs.
+description: Use for logged-in identity tasks such as filling forms, applying to jobs, or operating a UI with no API, and as a throttled fallback for the hardest bot walls g-scraper cannot pass. Covers the gbrowser CLI, refs, fallback budgets, and stopping on challenges. Public scraping belongs in g-scraper; the research browser is retired for agents except explicit fallback jobs, while research `fetch` stays as the rotating-IP HTTP pool.
 ---
 
 # Driving gbrowser

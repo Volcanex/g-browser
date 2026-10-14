@@ -548,7 +548,7 @@ def test_cli_research_warning_and_fallback_payload(monkeypatch, capsys, flag):
     assert code == 0
     assert jobs[0].get("fallback", False) == flag
     assert capsys.readouterr().err == ("" if flag else
-        "research mode is retired for agents: use g-scraper; --fallback for the hardest walls\n")
+        "the research browser is retired for agents: use g-scraper; --fallback for the hardest walls\n")
 
 
 def test_cli_preserves_budget_exit_code_from_http_429(monkeypatch, capsys):
