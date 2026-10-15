@@ -1,0 +1,105 @@
+[
+  {
+    "requested_url": "https://www.linkedin.com/jobs/",
+    "url": "https://www.linkedin.com/jobs/",
+    "ok": true,
+    "challenge": null,
+    "error": null,
+    "bytes": 7380279,
+    "by_resource_type": {
+      "Document": 195027,
+      "Stylesheet": 440769,
+      "Script": 6261449,
+      "Other": 1321,
+      "Fetch": 276848,
+      "XHR": 204865,
+      "Image": 0
+    },
+    "by_host": {
+      "static.licdn.com": 6420128,
+      "www.linkedin.com": 518928,
+      "www.gstatic.com": 355346,
+      "platform.linkedin.com": 83369,
+      "www.google.com": 1554,
+      "merchantpool1.linkedin.com": 954,
+      "?": 0
+    },
+    "first_party": 603251,
+    "third_party": 6777028,
+    "cache_hits": 69
+  },
+  {
+    "requested_url": "https://www.indeed.co.uk/",
+    "url": "https://uk.indeed.com/",
+    "ok": true,
+    "challenge": {
+      "kind": "login",
+      "confidence": "high",
+      "evidence": "auth wall, sign-in required",
+      "all": [
+        {
+          "kind": "login",
+          "confidence": "high",
+          "evidence": "auth wall, sign-in required"
+        }
+      ]
+    },
+    "error": null,
+    "bytes": 1704468,
+    "by_resource_type": {
+      "Document": 70752,
+      "Stylesheet": 88505,
+      "Script": 1487660,
+      "XHR": 3376,
+      "Fetch": 51635,
+      "Other": 2540
+    },
+    "by_host": {
+      "c03.s3.indeed.com": 1084849,
+      "sgtm.indeed.com": 320720,
+      "d3fw5vlhllyvee.cloudfront.net": 207089,
+      "uk.indeed.com": 85793,
+      "autocomplete.indeed.com": 4887,
+      "s.indeed.com": 696,
+      "www.indeed.co.uk": 319,
+      "t.indeed.com": 115,
+      "?": 0
+    },
+    "first_party": 1497379,
+    "third_party": 207089,
+    "cache_hits": 0
+  },
+  {
+    "requested_url": "https://www.vinted.co.uk/items/9057231353-next-dress",
+    "url": "https://www.vinted.co.uk/items/9057231353-next-dress",
+    "ok": true,
+    "challenge": {
+      "kind": "cloudflare",
+      "confidence": "high",
+      "evidence": "cloudflare challenge markers",
+      "all": [
+        {
+          "kind": "cloudflare",
+          "confidence": "high",
+          "evidence": "cloudflare challenge markers"
+        }
+      ]
+    },
+    "error": null,
+    "bytes": 426171,
+    "by_resource_type": {
+      "Image": 0,
+      "Document": 13442,
+      "Script": 241670,
+      "XHR": 171059
+    },
+    "by_host": {
+      "www.vinted.co.uk": 397791,
+      "challenges.cloudflare.com": 28380,
+      "?": 0
+    },
+    "first_party": 397791,
+    "third_party": 28380,
+    "cache_hits": 0
+  }
+]

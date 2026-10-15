@@ -115,6 +115,8 @@ def render(result: dict, args) -> int:
 
 
 def _render_human(result: dict, args):
+    if result.get("tab_id"):
+        print(f"[tab: {result['tab_id']} — use --tab for follow-up calls]", file=sys.stderr)
     if not result.get("ok"):
         print(f"FAILED at step {result.get('failed_step')}: {result.get('error')}", file=sys.stderr)
         state = result.get("state") or {}
@@ -152,6 +154,13 @@ def _render_human(result: dict, args):
 def build_job(args) -> dict:
     cmd = args.cmd
     job: dict = {"mode": args.mode}
+    params = {}
+    if getattr(args, "tab", None):
+        params["tab_id"] = args.tab
+    if getattr(args, "images", False):
+        params["images"] = True
+    if params:
+        job["params"] = params
     if getattr(args, "fallback", False):
         job["fallback"] = True
     if getattr(args, "frugal", None) is not None:
@@ -271,6 +280,8 @@ def main(argv=None):
                        help="research = throwaway profile + datacenter IP; "
                             "identity = your real profile + residential IP")
         p.add_argument("--url", help="navigate here first")
+        p.add_argument("--tab", help="tab_id returned by an earlier job")
+        p.add_argument("--images", action="store_true", help="allow identity images for this job")
         p.add_argument("--timeout", type=float, help="job budget in seconds")
         p.add_argument("--frugal", choices=["true", "false", "strict"], default=None)
         p.add_argument("--fallback", action="store_true",
@@ -354,6 +365,9 @@ def main(argv=None):
             print(f"egress    {st['proxy']}")
             print(f"attached  {st['attached']}   busy: {st['busy']}"
                   f"{' by ' + str(st['holder']) if st['holder'] else ''}")
+            if st.get("tabs"):
+                tabs = st["tabs"]
+                print(f"tabs      {tabs['busy']} busy / {tabs['total']} total (cap {tabs['max']})")
             print(f"url       {st['current_url']}")
             for mode, b in (st.get("bandwidth") or {}).items():
                 print(f"bytes     {mode}: {b['total'] / 1048576:.1f} MB")

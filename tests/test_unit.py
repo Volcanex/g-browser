@@ -449,6 +449,21 @@ def _fallback_manager(tmp_path, monkeypatch):
     manager = core.BrowserManager()
     manager.mode = core.modes.RESEARCH
     manager.attached = True
+    from types import SimpleNamespace
+    class Page:
+        url = "about:blank"
+        closed = False
+        def is_closed(self): return self.closed
+        async def close(self): self.closed = True
+        async def wait_for_timeout(self, ms): await asyncio.sleep(ms / 1000)
+
+    async def new_tab(page=None):
+        tab = core.Tab(page or Page(), SimpleNamespace())
+        manager._tabs[tab.id] = tab
+        manager._page = tab.page
+        return tab
+
+    monkeypatch.setattr(manager, "_new_tab", new_tab)
     return manager
 
 
@@ -488,34 +503,19 @@ def test_fallback_enforces_blocking_and_records_job_bytes(tmp_path, monkeypatch,
     from browser import core, modes
     manager = _fallback_manager(tmp_path, monkeypatch)
     manager.mode = modes.resolve(mode)
-    blocked = []
-
-    class Page:
-        url = "https://example.com"
-
-        async def route(self, pattern, handler):
-            for kind in ("image", "media", "font", "document"):
-                async def abort():
-                    blocked.append(kind)
-                async def proceed():
-                    pass
-                await handler(SimpleNamespace(request=SimpleNamespace(resource_type=kind),
-                                              abort=abort, continue_=proceed))
-
-        async def unroute(self, *args):
-            pass
-
-    manager._page = Page()
-
-    async def action(step):
-        manager._on_response(SimpleNamespace(
-            url="https://example.com", headers={"content-length": "321"}, status=200,
-            request=SimpleNamespace(is_navigation_request=lambda: False)))
+    async def action(step, tab):
+        for kind in ("Image", "Media", "Font", "Document"):
+            if core._blocked("https://example.com/file", kind, "https://example.com",
+                             False, tab.frugal, tab.images):
+                blocked.append(kind.lower())
+        manager._request(tab, {"requestId": "1", "request": {"url": "https://example.com"}, "type": "Document"})
+        manager._finished(tab, {"requestId": "1", "encodedDataLength": 321})
         return {"done": True}
 
     async def detect(page):
         return None
 
+    blocked = []
     monkeypatch.setattr(manager, "_do", action)
     monkeypatch.setattr(core.snapshot, "detect", detect)
     steps = [{"action": "screenshot", "label_refs": labelled}]
@@ -526,7 +526,7 @@ def test_fallback_enforces_blocking_and_records_job_bytes(tmp_path, monkeypatch,
     assert result["bytes"] == 321
     assert manager.status()["last_job"]["bytes"] == 321
     assert manager.status()["fallback"]["jobs"][0]["bytes"] == 321
-    assert manager._job_bytes is None
+    assert all(t.job is None for t in manager._tabs.values())
 
 
 def test_fallback_failed_browser_start_still_counts(tmp_path, monkeypatch):
@@ -585,3 +585,228 @@ def test_fallback_api_field_and_retry_header(tmp_path, monkeypatch):
         assert refused.status_code == 429
         assert refused.json()["exit_code"] == 9
         assert int(refused.headers["Retry-After"]) > 0
+
+
+@pytest.mark.parametrize("cap", ["0", "-2", "bad"])
+def test_tab_cap_requires_positive_integer(tmp_path, monkeypatch, cap):
+    import browser.core as core
+    monkeypatch.setenv("GBROWSER_MAX_TABS", cap)
+    with pytest.raises(ValueError):
+        core.BrowserManager()
+
+
+def test_parallel_tabs_are_capped_and_mode_switch_drains(tmp_path, monkeypatch):
+    from browser import core, modes
+    manager = _fallback_manager(tmp_path, monkeypatch)
+    manager.mode = modes.IDENTITY
+    started = []
+    release = asyncio.Event()
+
+    async def steps(*args):
+        tab = args[-1]
+        started.append((manager.mode.name, tab.id))
+        if manager.mode.identity:
+            await release.wait()
+        return {"ok": True}
+
+    async def relaunch(name):
+        assert not manager._busy()
+        assert len(started) == 3
+        manager._tabs.clear()
+        manager.mode = modes.resolve(name)
+        return {"ok": True}
+
+    monkeypatch.setattr(manager, "_run_steps", steps)
+    monkeypatch.setattr(manager, "_relaunch", relaunch)
+
+    async def check():
+        jobs = [asyncio.create_task(manager.run({"mode": "identity", "url": "about:blank"}, str(i)))
+                for i in range(3)]
+        for _ in range(20):
+            await asyncio.sleep(0)
+        assert manager.status()["tabs"]["busy"] == 3
+        switch = asyncio.create_task(manager.run({"mode": "research", "action": "snapshot"}, "switch"))
+        fourth = asyncio.create_task(manager.run({"mode": "identity", "url": "about:blank"}, "fourth"))
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert len(started) == 3
+        assert not switch.done() and not fourth.done()
+        release.set()
+        results = await asyncio.gather(*jobs, switch)
+        fourth.cancel()
+        await asyncio.gather(fourth, return_exceptions=True)
+        assert all(r["ok"] for r in results)
+        assert len({r["tab_id"] for r in results[:3]}) == 3
+        assert started[3][0] == "research"
+        assert manager.holder is None
+        await manager.stop()
+
+    asyncio.run(check())
+
+
+def test_explicit_tab_and_legacy_followups_keep_refs_and_owner(tmp_path, monkeypatch):
+    manager = _fallback_manager(tmp_path, monkeypatch)
+
+    async def steps(*args):
+        tab = args[-1]
+        tab.sigs.setdefault("e1", tab.id)
+        assert tab.sigs["e1"] == tab.id
+        return {"ok": True}
+
+    monkeypatch.setattr(manager, "_run_steps", steps)
+
+    async def check():
+        first = await manager.run({"mode": "research", "url": "about:blank"}, "one")
+        legacy = await manager.run({"mode": "research", "action": "snapshot"}, "one")
+        assert legacy["tab_id"] == first["tab_id"]
+        other = await manager.run({"mode": "research", "url": "about:blank"}, "two")
+        assert other["tab_id"] != first["tab_id"]
+        follow = await manager.run({"mode": "research", "tab_id": first["tab_id"]}, "one")
+        assert follow["tab_id"] == first["tab_id"]
+        refused = await manager.run({"mode": "research", "tab_id": first["tab_id"]}, "two")
+        assert not refused["ok"] and "tab_id" in refused["error"]
+        await manager._close_tab(manager._tabs[first["tab_id"]])
+        expired = await manager.run({"mode": "research", "tab_id": first["tab_id"]}, "one")
+        assert not expired["ok"]
+        await manager.stop()
+
+    asyncio.run(check())
+
+
+def test_per_job_bytes_exclude_cache_and_other_tabs(tmp_path, monkeypatch):
+    manager = _fallback_manager(tmp_path, monkeypatch)
+
+    async def steps(*args):
+        tab = args[-1]
+        n = int(tab.holder)
+        for request_id, cached in (("network", False), ("cache", True)):
+            manager._request(tab, {"requestId": request_id, "request": {"url": "https://example.com/a"}, "type": "Script"})
+            manager._response(tab, {"requestId": request_id, "response": {"fromDiskCache": cached}})
+            if not cached:
+                manager._data(tab, {"requestId": request_id, "encodedDataLength": n})
+            await asyncio.sleep(0)
+            manager._finished(tab, {"requestId": request_id, "encodedDataLength": n + 10})
+        return {"ok": True}
+
+    monkeypatch.setattr(manager, "_run_steps", steps)
+
+    async def check():
+        results = await asyncio.gather(*(manager.run({"mode": "research", "url": "about:blank"}, str(n))
+                                         for n in (100, 200, 300)))
+        assert [r["bytes"] for r in results] == [110, 210, 310]
+        assert manager.bandwidth()["research"]["total"] == 630
+        assert all(r["bandwidth"]["by_resource_type"] == {"Script": r["bytes"]} for r in results)
+        await manager.stop()
+
+    asyncio.run(check())
+
+
+def test_timeout_and_cancellation_release_tabs(tmp_path, monkeypatch):
+    from browser import core
+    manager = _fallback_manager(tmp_path, monkeypatch)
+
+    async def steps(*args):
+        await asyncio.sleep(10)
+
+    async def detect(page): return None
+    monkeypatch.setattr(manager, "_run_steps", steps)
+    monkeypatch.setattr(core.snapshot, "detect", detect)
+
+    async def check():
+        result = await manager.run({"mode": "research", "timeout_s": .01, "snapshot_on_error": False})
+        assert not result["ok"] and "budget" in result["error"]
+        assert not manager.status()["busy"]
+        task = asyncio.create_task(manager.run({"mode": "research"}))
+        await asyncio.sleep(.01)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert not manager.status()["busy"]
+
+    asyncio.run(check())
+
+
+def test_idle_extra_tabs_close_but_one_remains(tmp_path, monkeypatch):
+    from browser import core
+    manager = _fallback_manager(tmp_path, monkeypatch)
+    monkeypatch.setattr(core, "IDLE_TAB_SECONDS", .01)
+
+    async def steps(*args):
+        await asyncio.sleep(.01)
+        return {"ok": True}
+    monkeypatch.setattr(manager, "_run_steps", steps)
+
+    async def check():
+        await asyncio.gather(*(manager.run({"mode": "research", "url": "about:blank"}, str(i)) for i in range(3)))
+        await asyncio.sleep(.04)
+        assert manager.status()["tabs"]["total"] == 1
+        await manager.stop()
+
+    asyncio.run(check())
+
+
+@pytest.mark.parametrize("url,kind,images,blocked", [
+    ("https://www.googletagmanager.com/gtm.js", "Script", False, True),
+    ("https://www.example.com/main.js", "Script", False, False),
+    ("https://www.example.com/beacon", "Ping", False, True),
+    ("https://cdn.example.com/a.jpg", "Image", False, True),
+    ("https://cdn.example.com/a.jpg", "Image", True, False),
+    ("https://cdn.example.com/a.mp4", "Media", True, True),
+    ("https://cdn.example.com/a.woff", "Font", True, True),
+    ("https://challenges.cloudflare.com/a", "Script", False, False),
+    ("https://www.google.com/recaptcha/api.js", "Script", False, False),
+    ("https://www.gstatic.com/recaptcha/image", "Image", False, False),
+    ("https://geo.captcha-delivery.com/image", "Image", False, False),
+    ("https://js.hcaptcha.com/a", "Script", False, False),
+    ("https://www.example.com/cdn-cgi/challenge-platform/image", "Image", False, False),
+])
+def test_identity_filter_preserves_content_and_challenges(url, kind, images, blocked):
+    from browser.core import _blocked
+    assert _blocked(url, kind, "https://www.example.com", True, False, images) == blocked
+
+
+def test_cli_tab_and_image_options_use_existing_api_params(monkeypatch):
+    import cli
+    jobs = []
+    monkeypatch.setattr(cli, "post", lambda path, job, **kw: jobs.append(job) or {"ok": True})
+    assert cli.main(["snapshot", "--mode", "identity", "--tab", "abc", "--images"]) == 0
+    assert jobs[0]["params"] == {"tab_id": "abc", "images": True}
+
+
+def test_assist_observes_the_only_tab_without_changing_its_owner(tmp_path, monkeypatch):
+    manager = _fallback_manager(tmp_path, monkeypatch)
+
+    async def steps(*args): return {"ok": True}
+    monkeypatch.setattr(manager, "_run_steps", steps)
+
+    async def check():
+        first = await manager.run({"mode": "research", "url": "about:blank"}, "cli")
+        assist = await manager.run({"mode": "research", "action": "snapshot"}, "assist")
+        assert assist["tab_id"] == first["tab_id"]
+        assert manager._tabs[first["tab_id"]].holder == "cli"
+        follow = await manager.run({"mode": "research", "action": "snapshot"}, "cli")
+        assert follow["tab_id"] == first["tab_id"]
+
+    asyncio.run(check())
+
+
+def test_cdp_auth_answers_only_proxy_challenges_and_bounds_retries(tmp_path, monkeypatch):
+    from browser import core
+    from types import SimpleNamespace
+    manager = _fallback_manager(tmp_path, monkeypatch)
+    manager._proxy = {"username": "test-user", "password": "test-secret"}
+    sent = []
+
+    async def send(method, params):
+        sent.append(params["authChallengeResponse"])
+
+    tab = core.Tab(None, SimpleNamespace(send=send))
+
+    async def check():
+        proxy = {"requestId": "1", "authChallenge": {"source": "Proxy"}}
+        await manager._authenticate(tab, proxy)
+        await manager._authenticate(tab, proxy)
+        await manager._authenticate(tab, {"requestId": "2", "authChallenge": {"source": "Server"}})
+
+    asyncio.run(check())
+    assert sent == [{"response": "ProvideCredentials", "username": "test-user", "password": "test-secret"},
+                    {"response": "CancelAuth"}, {"response": "Default"}]

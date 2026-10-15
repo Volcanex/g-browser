@@ -43,12 +43,12 @@ gbrowser screenshot --mode research --fallback --labels
 The API equivalent is `"fallback": true`. Flagged non-identity jobs share a
 server-side rolling-hour budget of 20 jobs, configured by the positive integer
 `GBROWSER_FALLBACK_PER_HOUR`. Each admitted job counts, including failures and
-jobs waiting for the browser lock. Identity jobs are exempt. Unflagged legacy
+jobs waiting for a browser tab. Identity jobs are exempt. Unflagged legacy
 jobs keep working during migration.
 
 Admission is persisted in `var/fallback.sqlite3` (under `GBROWSER_VAR` when set),
-so restarting never resets the budget. Excess jobs are refused before acquiring
-the browser lock with HTTP 429, `Retry-After`, and CLI exit **9**. The error
+so restarting never resets the budget. Excess jobs are refused before waiting for
+a browser tab with HTTP 429, `Retry-After`, and CLI exit **9**. The error
 names the UTC time when enough slots expire; JSON also includes `retry_at` and
 `retry_after_s`. Stop and defer until that time.
 
@@ -60,9 +60,11 @@ labelled screenshot job if images were blocked by an earlier job.
 
 Job results include `bytes`. `gbrowser status` shows the last job and every
 fallback job in the rolling hour with its byte count and budget usage. These
-are Content-Length estimates from responses received during the job; chunked
-responses and proxy overhead are not measured. Fallback records persist across
-restarts; the last-job and cumulative bandwidth summaries are in memory.
+are CDP encoded transfer bytes, including chunked responses and response headers;
+HTTP-cache and service-worker hits count as zero. Proxy/TLS overhead is not measured.
+Each tab has its own meter; responses from another tab never enter its job total.
+Fallback records persist across restarts; the last-job and cumulative bandwidth
+summaries are in memory.
 
 ## Modes: which persona is wearing the browser
 
@@ -81,8 +83,9 @@ consumer that forgot to think about it silently borrows the owner's identity, an
 that is the failure this design exists to prevent. An unnamed mode is refused
 with a message listing the options.
 
-Switching mode **relaunches Chrome** - Patchright fixes both proxy and profile at
-`launch_persistent_context` time. Batch work by mode. The service boots into
+Switching mode waits for every busy tab to drain, then **relaunches Chrome**.
+Patchright fixes both proxy and profile at `launch_persistent_context` time.
+Batch work by mode. The service boots into
 `research` so a restart never silently arms the identity profile.
 
 Honest limit: both modes run the same Chrome on the same Xvfb display, so canvas,
@@ -104,9 +107,20 @@ friction, not a wall.
   a mismatch every fingerprinting script cross-checks against the Client Hints
   and the JS feature surface. An honest Chrome reports itself. `GBROWSER_UA`
   overrides only if you have a reason.
-- **One job at a time.** A single `asyncio.Lock` in `browser/core.py` - one
-  browser, one 7GB box. Consumers block rather than collide. Parallel is
-  deliberately deferred.
+- **Up to three jobs at once, on separate tabs.** `GBROWSER_MAX_TABS` is a
+  positive integer (default 3). One persistent context shares cookies and egress;
+  each job leases one tab with its own refs, signatures, status and byte meter.
+  A FIFO condition queue admits jobs; a queued mode switch waits for all busy
+  tabs and prevents new jobs jumping ahead. Explicit follow-ups on one tab
+  serialise. Restart/reseed refuse while any tab is busy.
+- **Tab IDs preserve multi-call flows.** Every admitted job returns `tab_id`.
+  Pass `--tab ID` on CLI follow-ups, or `params: {"tab_id": "ID"}` on `/run`.
+  Without an ID a consumer's sole tab is reused; concurrent navigation jobs can
+  create more tabs, after which an ambiguous follow-up fails closed. IDs expire
+  on relaunch, eviction or closure: an unknown ID never falls back to another
+  page. Idle extras close after 60 seconds; at least one tab remains. New work
+  may evict an idle tab at capacity. `status.tabs` reports busy/total/max and
+  each session's holder, URL and start time.
 - **The profile is the real thing.** `var/profile/` IS the owner's identity, seeded
   from their desktop Chrome and maintained via the panel's re-seed. Only the
   orchestrator ever opens it - Chrome locks the dir; two openers corrupt it.
@@ -124,11 +138,23 @@ friction, not a wall.
   failure.** Exit 3 stops work and triggers a backoff, so a detector that cries
   wolf costs exactly as much as one that misses. If you widen these patterns,
   test them against a page that merely *discusses* rate limits.
-- **Frugal no longer blocks images.** Measured on LinkedIn: images are ~180KB of
-  a 2.1MB page load, so blocking them saved 9% while making every screenshot
-  useless to a vision model. Media and fonts are still blocked. `frugal:"strict"`
-  restores the old set when residential bytes matter more than seeing the page.
-  Fallback jobs enforce strict blocking except for labelled screenshots.
+- **Identity bandwidth is opt-in for images.** Identity always blocks media,
+  fonts, ping/beacon requests and known third-party analytics/ads/tracker hosts.
+  First-party scripts stay available; DataDome, Cloudflare challenge, hCaptcha,
+  reCAPTCHA and other challenge hosts are exempt from these filters. Pass
+  `--images` (API `params: {"images": true}`) for screenshot/upload flows that
+  need images; navigate in that job if a prior load blocked them. Research keeps
+  normal frugal media/font blocking, with strict image blocking for fallback
+  jobs except labelled screenshots.
+- **HTTP caching stays enabled.** CDP Fetch filtering replaces Playwright
+  routing, which disables HTTP caching. Chrome keeps a 256 MiB HTTP disk cache
+  in each profile's `http-cache/`, across jobs and relaunches. Cache freshness
+  follows origin headers. Byte accounting uses CDP encoded transfer lengths,
+  counts cache hits as zero and exposes per-job `bandwidth.by_host` and
+  `bandwidth.by_resource_type`.
+  The filtering CDP session also answers proxy auth challenges; enabling Fetch
+  without this breaks authenticated proxies. This session supplies credentials
+  only for proxy challenges, never for a server's HTTP authentication challenge.
 
 ## Perception: how a weak agent drives it
 
@@ -188,6 +214,9 @@ Exit codes are the interface: **0** a human dealt with it, **7** nobody came,
   (`GBROWSER_ASSIST_TZ` overrides).
 - **`--mode` is asserted, never applied.** A mismatch exits 1. Applying it would
   relaunch Chrome and destroy the page the human was summoned to.
+- **Assist needs an unambiguous tab.** With one open tab it observes that session
+  without taking over the consumer's ownership. Multiple tabs are refused until
+  the idle extras close; it must never observe or acknowledge the wrong form.
 - **Resolution is read off the page, then acked.** Each poll runs
   `check_challenge` + one `eval` in a single job (one lock acquisition) and looks
   for: the detected wall clearing, a captcha response field
@@ -291,7 +320,7 @@ Webshare dashboard. For `identity` that is a forced cookie burn every 30 days;
 - `auth.py`: single-password cookie gate + service-token gate.
 - `assist.py`: the human-intervention primitive: quiet hours, the ntfy push,
   page-side resolution detection, the ack nonce, the JSONL record.
-- `browser/core.py`: `BrowserManager`: launch/attach, lock, timeouts, the action
+- `browser/core.py`: `BrowserManager`: launch/attach, tab leases, timeouts, the action
   set, the bandwidth meter, the activity ring buffer.
 - `browser/fallback.py`: persistent rolling-hour fallback admission and per-job
   byte records.
@@ -322,10 +351,19 @@ Env comes from the passport (`@INSTANCE_ENV@`, usually `gp-core/.env`) then
 `var/` beside this file unless `GBROWSER_VAR` points elsewhere. The admin cookie
 secret `GBROWSER_COOKIE_VALUE` comes from `/etc/g-secrets/gbrowser-admin.env`
 (or `.env` here). Without it the service will not start.
-`GBROWSER_FALLBACK_PER_HOUR` defaults to 20 and can be set in `.env` here.
+`GBROWSER_FALLBACK_PER_HOUR` defaults to 20 and `GBROWSER_MAX_TABS` defaults to 3;
+both can be set in `.env` here.
 
-Tests: `.venv/bin/python -m pytest tests/test_unit.py` (pure logic) and
-`.venv/bin/python tests/smoke_phase1.py` against the live service.
+Tests: `.venv/bin/python -m pytest tests/test_unit.py` (pure logic),
+`.venv/bin/python tests/smoke_cache.py` (isolated profile/local HTTP cache), and
+`.venv/bin/python tests/smoke_phase1.py` plus `tests/smoke_tabs.py` against the live
+service. `tests/measure_identity.py before|after` records read-only identity
+loads by type/host with an eight-second observation window and a cold cache.
+Use `tests/smoke_cache.py --proxy` to check cache reuse through an authenticated
+local proxy, including image blocking and the explicit image opt-in.
+It clears HTTP cache only, leaving cookies/login state intact. Recorded samples
+live in `tests/identity_{before,after}.json`; Indeed's `.co.uk` and `.com` hosts
+are both counted as first party, while separate CDN domains count as third party.
 
 ## CLI
 
@@ -336,8 +374,8 @@ changes.
 
 ```sh
 gbrowser snapshot --mode identity --url https://example.com/apply
-gbrowser click --mode identity --ref e24 --then-snapshot
-gbrowser upload --mode identity --ref e24 --chooser --file var/uploads/document.pdf
+gbrowser click --mode identity --tab ID --ref e24 --then-snapshot
+gbrowser upload --mode identity --tab ID --images --ref e24 --chooser --file var/uploads/document.pdf
 gbrowser status | egress --mode identity | modes
 ```
 
@@ -358,6 +396,7 @@ The driving skill lives in `skills/gbrowser-driving/`, symlinked into
 { "mode": "identity",
   "url": "https://job-boards.greenhouse.io/example/jobs/123",
   "timeout_s": 150,
+  "params": {"images": true},
   "steps": [
     {"action": "snapshot"},
     {"action": "fill", "ref": "e20", "value": "..."},
@@ -375,3 +414,98 @@ Actions: `snapshot`, `check_challenge`, `goto`, `back`, `reload`, `click`,
 Most accept `ref` **or** `selector`. The selector path is unchanged, so an
 earlier bot's hard-won choreography still works verbatim. Site choreography
 lives in the **consumer**; g-browser stays site-agnostic.
+
+## Identity bandwidth measurements (2026-10-15)
+
+Read-only live identity navigation, normal defaults, one cold-cache sequence per
+configuration, eight seconds after DOMContentLoaded. No login, submission or
+external click. CDP encoded transfer lengths include response headers and exclude
+proxy/TLS overhead. The after observer uses a raw CDP socket: a second Patchright
+client disturbed target proxy-auth state. Both samples use Network events.
+Dynamic content and challenge responses vary between loads. Separate CDN domains
+(for example licdn.com) count as third party; this does not mean they are trackers.
+Indeed redirected to uk.indeed.com, counted alongside indeed.co.uk as first party.
+Indeed reported a login wall in both samples; Vinted reported Cloudflare in both.
+The Vinted numbers describe the challenge, not the listing content.
+
+| Page | Before bytes | After bytes | Reduction | First-party before → after | Third-party before → after |
+|---|---:|---:|---:|---:|---:|
+| LinkedIn jobs | 8,479,728 | 7,380,279 | 12.97% | 545,173 → 603,251 | 7,934,555 → 6,777,028 |
+| Indeed UK | 1,926,124 | 1,704,468 | 11.51% | 1,534,998 → 1,497,379 | 391,126 → 207,089 |
+| Vinted listing URL | 446,340 | 426,171 | 4.52% | 389,755 → 397,791 | 56,585 → 28,380 |
+
+Bytes by resource type (before → after):
+
+| Type | LinkedIn | Indeed | Vinted |
+|---|---:|---:|---:|
+| Document | 198,337 → 195,027 | 79,400 → 70,752 | 12,620 → 13,442 |
+| FedCM | 0 → 0 | 79,257 → 0 | 0 → 0 |
+| Fetch | 1,042,740 → 276,848 | 52,103 → 51,635 | 0 → 0 |
+| Image | 266,893 → 0 | 7,736 → 0 | 0 → 0 |
+| Media | 0 → 0 | 0 → 0 | 0 → 0 |
+| Font | 0 → 0 | 0 → 0 | 0 → 0 |
+| Other | 1,386 → 1,321 | 2,603 → 2,540 | 0 → 0 |
+| Ping | 0 → 0 | 7,174 → 0 | 0 → 0 |
+| Script | 6,366,955 → 6,261,449 | 1,603,934 → 1,487,660 | 266,828 → 241,670 |
+| Stylesheet | 398,614 → 440,769 | 89,802 → 88,505 | 0 → 0 |
+| XHR | 204,803 → 204,865 | 4,115 → 3,376 | 166,892 → 171,059 |
+
+Bytes by host, LinkedIn jobs:
+
+| Host | Party | Before bytes | After bytes |
+|---|---|---:|---:|
+| static.licdn.com | third | 6,983,764 | 6,420,128 |
+| www.linkedin.com | first | 460,839 | 518,928 |
+| www.gstatic.com | third | 355,346 | 355,346 |
+| www.googletagmanager.com | third | 316,779 | 0 |
+| media.licdn.com | third | 264,784 | 0 |
+| platform.linkedin.com | first | 83,379 | 83,369 |
+| googleads.g.doubleclick.net | third | 3,429 | 0 |
+| dpm.demdex.net | third | 2,094 | 0 |
+| www.google.com | third | 1,698 | 1,554 |
+| 9261636.fls.doubleclick.net | third | 1,615 | 0 |
+| lnkd.demdex.net | third | 1,511 | 0 |
+| merchantpool1.linkedin.com | first | 955 | 954 |
+| 10880300.fls.doubleclick.net | third | 944 | 0 |
+| collect.tealiumiq.com | third | 763 | 0 |
+| trkn.us | third | 721 | 0 |
+| www.google.co.uk | third | 455 | 0 |
+| bat.bing.com | third | 378 | 0 |
+| www.facebook.com | third | 274 | 0 |
+
+Bytes by host, Indeed UK:
+
+| Host | Party | Before bytes | After bytes |
+|---|---|---:|---:|
+| c03.s3.indeed.com | first | 1,098,142 | 1,084,849 |
+| sgtm.indeed.com | first | 320,600 | 320,720 |
+| d3fw5vlhllyvee.cloudfront.net | third | 207,077 | 207,089 |
+| accounts.google.com | third | 163,622 | 0 |
+| uk.indeed.com | first | 104,487 | 85,793 |
+| lh3.googleusercontent.com | third | 19,895 | 0 |
+| autocomplete.indeed.com | first | 5,564 | 4,887 |
+| secure.indeed.com | first | 4,190 | 0 |
+| s.indeed.com | first | 1,153 | 696 |
+| t.indeed.com | first | 543 | 115 |
+| google.com | third | 532 | 0 |
+| www.indeed.co.uk | first | 319 | 319 |
+
+Bytes by host, Vinted listing URL:
+
+| Host | Party | Before bytes | After bytes |
+|---|---|---:|---:|
+| www.vinted.co.uk | first | 389,755 | 397,791 |
+| challenges.cloudflare.com | third | 56,585 | 28,380 |
+
+Verification:
+- Unit suite: 66 passed, one existing Starlette/httpx deprecation warning.
+- Existing live smoke suite: 22 passed, 0 failed.
+- Live refs: two synthetic forms retain separate refs/values; ambiguous calls refuse.
+- Live identity: three distinct tabs overlap for 5.359 seconds; all exit 195.40.133.26.
+- Live mode drain: a queued research job starts 0.695 seconds after the last
+  identity tab finishes; the mode stays identity while three tabs are busy.
+- Live idle cleanup: extras close to 0 busy / 1 total, with the cap still 3.
+- Isolated local cache: 20,485 B cold, 418 B warm, 239 B after relaunch;
+  the server received one script request and one image request (explicit opt-in).
+- Authenticated local proxy/cache: 20,669 B cold, 418 B warm, 423 B after relaunch;
+  one script request across relaunch; the filter's auth handler only answers proxy challenges.

@@ -1,0 +1,123 @@
+[
+  {
+    "requested_url": "https://www.linkedin.com/jobs/",
+    "url": "https://www.linkedin.com/jobs/",
+    "ok": true,
+    "challenge": null,
+    "error": null,
+    "bytes": 8479728,
+    "by_resource_type": {
+      "Document": 198337,
+      "Image": 266893,
+      "Stylesheet": 398614,
+      "Script": 6366955,
+      "Other": 1386,
+      "Fetch": 1042740,
+      "XHR": 204803
+    },
+    "by_host": {
+      "static.licdn.com": 6983764,
+      "www.linkedin.com": 460839,
+      "www.gstatic.com": 355346,
+      "www.googletagmanager.com": 316779,
+      "media.licdn.com": 264784,
+      "platform.linkedin.com": 83379,
+      "googleads.g.doubleclick.net": 3429,
+      "dpm.demdex.net": 2094,
+      "www.google.com": 1698,
+      "9261636.fls.doubleclick.net": 1615,
+      "lnkd.demdex.net": 1511,
+      "merchantpool1.linkedin.com": 955,
+      "10880300.fls.doubleclick.net": 944,
+      "collect.tealiumiq.com": 763,
+      "trkn.us": 721,
+      "www.google.co.uk": 455,
+      "bat.bing.com": 378,
+      "www.facebook.com": 274
+    },
+    "first_party": 545173,
+    "third_party": 7934555,
+    "cache_hits": 0
+  },
+  {
+    "requested_url": "https://www.indeed.co.uk/",
+    "url": "https://uk.indeed.com/",
+    "ok": true,
+    "challenge": {
+      "kind": "login",
+      "confidence": "high",
+      "evidence": "auth wall, sign-in required",
+      "all": [
+        {
+          "kind": "login",
+          "confidence": "high",
+          "evidence": "auth wall, sign-in required"
+        }
+      ]
+    },
+    "error": null,
+    "bytes": 1926124,
+    "by_resource_type": {
+      "Document": 79400,
+      "Stylesheet": 89802,
+      "Script": 1603934,
+      "Image": 7736,
+      "XHR": 4115,
+      "Fetch": 52103,
+      "Ping": 7174,
+      "Other": 2603,
+      "FedCM": 79257
+    },
+    "by_host": {
+      "c03.s3.indeed.com": 1098142,
+      "sgtm.indeed.com": 320600,
+      "d3fw5vlhllyvee.cloudfront.net": 207077,
+      "accounts.google.com": 163622,
+      "uk.indeed.com": 104487,
+      "lh3.googleusercontent.com": 19895,
+      "autocomplete.indeed.com": 5564,
+      "secure.indeed.com": 4190,
+      "s.indeed.com": 1153,
+      "t.indeed.com": 543,
+      "google.com": 532,
+      "www.indeed.co.uk": 319,
+      "?": 0
+    },
+    "first_party": 1534998,
+    "third_party": 391126,
+    "cache_hits": 0
+  },
+  {
+    "requested_url": "https://www.vinted.co.uk/items/9057231353-next-dress",
+    "url": "https://www.vinted.co.uk/items/9057231353-next-dress",
+    "ok": true,
+    "challenge": {
+      "kind": "cloudflare",
+      "confidence": "high",
+      "evidence": "cloudflare challenge markers",
+      "all": [
+        {
+          "kind": "cloudflare",
+          "confidence": "high",
+          "evidence": "cloudflare challenge markers"
+        }
+      ]
+    },
+    "error": null,
+    "bytes": 446340,
+    "by_resource_type": {
+      "Document": 12620,
+      "Image": 0,
+      "Script": 266828,
+      "XHR": 166892
+    },
+    "by_host": {
+      "www.vinted.co.uk": 389755,
+      "challenges.cloudflare.com": 56585,
+      "?": 0
+    },
+    "first_party": 389755,
+    "third_party": 56585,
+    "cache_hits": 0
+  }
+]
